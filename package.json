@@ -1,0 +1,13 @@
+{
+  "name": "baly-ventas",
+  "version": "1.0.0",
+  "description": "Baly · Seguimiento de ventas del equipo comercial",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
