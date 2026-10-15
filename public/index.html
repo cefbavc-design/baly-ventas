@@ -218,6 +218,7 @@
     </div>
     <input id="q" type="search" placeholder="Buscar cliente, ciudad, tel…">
     <select id="fLleva"><option value="">Todos los comerciales</option></select>
+    <select id="fOrden" title="Ordenar ventas"><option value="recientes">Más recientes</option><option value="monto-desc">Mayor monto</option><option value="monto-asc">Menor monto</option></select>
     <select id="fOrigen"><option value="">WPP y CRM</option><option>WPP</option><option>CRM</option></select>
     <button type="button" class="mode" id="mode" title="Estado del guardado">…</button>
     <button id="btnExport" title="Descargar respaldo">Exportar</button>
@@ -576,6 +577,16 @@ function contactoLink(l){
 }
 
 /* ===== Render ===== */
+// Orden de las tarjetas dentro de cada etapa
+function ordenar(lista){
+  const modo = $('#fOrden').value;
+  const monto = l => Number(l.cotizacion || 0);
+  const fecha = l => String(l.actualizado || '');
+  return lista.slice().sort((a, b) =>
+    modo === 'monto-desc' ? (monto(b) - monto(a)) || fecha(b).localeCompare(fecha(a)) :
+    modo === 'monto-asc'  ? (monto(a) - monto(b)) || fecha(b).localeCompare(fecha(a)) :
+                            fecha(b).localeCompare(fecha(a)));
+}
 function render(){
   const q = $('#q').value.trim().toLowerCase();
   const fo = $('#fOrigen').value;
@@ -586,7 +597,7 @@ function render(){
     (!q || [l.cliente,l.ciudad,l.telefono,l.lleva].join(' ').toLowerCase().includes(q))
   );
   $('#board').innerHTML = CIRCUITO.map(e => {
-    const items = visibles.filter(l => l.etapa === e.id).sort((a,b) => b.actualizado.localeCompare(a.actualizado));
+    const items = ordenar(visibles.filter(l => l.etapa === e.id));
     const pallets = items.reduce((s,l) => s + Number(l.pallets||0), 0);
     const cotizado = items.reduce((s,l) => s + Number(l.cotizacion||0), 0);
     return `
@@ -603,7 +614,7 @@ function render(){
   }).join('');
 
   // Vencidas: aparte, no suman a los totales del circuito
-  const venc = visibles.filter(l => l.etapa === VENCIDAS).sort((a,b) => String(b.actualizado).localeCompare(String(a.actualizado)));
+  const venc = ordenar(visibles.filter(l => l.etapa === VENCIDAS));
   const vs = $('#vencidas');
   vs.classList.toggle('abierta', vencidasAbierta);
   vs.dataset.etapa = VENCIDAS;
@@ -849,6 +860,8 @@ $('#btnNew').onclick = () => abrir();
 $('#q').addEventListener('input', render);
 $('#fOrigen').addEventListener('change', render);
 $('#fLleva').addEventListener('change', render);
+try{ const o = localStorage.getItem('baly_orden'); if (o) $('#fOrden').value = o; }catch(e){}
+$('#fOrden').addEventListener('change', () => { try{ localStorage.setItem('baly_orden', $('#fOrden').value); }catch(e){} render(); });
 
 /* ===== Vista horizontal / vertical (se recuerda en este navegador) ===== */
 function setVista(v){
