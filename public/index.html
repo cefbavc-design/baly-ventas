@@ -52,7 +52,7 @@
   .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--black);color:#fff;padding:10px 16px;border-radius:10px;font-weight:600;font-size:13px;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.3);display:none;max-width:90vw}
   .toast.on{display:block}
 
-  .board{display:grid;grid-template-columns:repeat(4,minmax(260px,1fr));gap:14px;padding:16px;overflow-x:auto;min-height:calc(100vh - 66px)}
+  .board{display:grid;grid-template-columns:repeat(5,minmax(240px,1fr));gap:14px;padding:16px;overflow-x:auto;min-height:calc(100vh - 66px)}
   .col{background:#ebeae5;border-radius:var(--radius);display:flex;flex-direction:column;min-height:300px}
   .col.drag-over,.vencidas.drag-over{outline:2px dashed var(--muted)}
   .col-head{padding:12px 12px 8px;border-top:4px solid var(--c);border-radius:var(--radius) var(--radius) 0 0;background:var(--panel)}
@@ -195,7 +195,7 @@
   }
 
   @media (max-width:700px){
-    .board{grid-template-columns:repeat(4,85vw);scroll-snap-type:x mandatory}
+    .board{grid-template-columns:repeat(5,85vw);scroll-snap-type:x mandatory}
     .col{scroll-snap-align:start}
     .tools{margin-left:0;width:100%}.tools input{flex:1;width:auto}
     .dlg-body{grid-template-columns:1fr}
@@ -308,10 +308,14 @@ const ETAPAS = [
   { id:2, nombre:'Cotizado · Seguimiento',           resp:'Seguimiento y persistencia',   color:'var(--s2)', ct:'#000' },
   { id:3, nombre:'Pendiente · Se confirma con pago', resp:'Esperando el pago',            color:'var(--s3)', ct:'#fff' },
   { id:4, nombre:'Pagado · Derivar a Operaciones',   resp:'Pasar a Operaciones',          color:'var(--s4)', ct:'var(--yellow)' },
+  { id:6, nombre:'Entregado',                        resp:'Pedido entregado al cliente',  color:'#009644',   ct:'#fff' },
   { id:5, nombre:'Vencidas',                         resp:'Fuera del circuito: cotización vencida', color:'#9a9a9a', ct:'#fff', aparte:true },
 ];
 const COMERCIALES = ['César', 'Sandro', 'Valentín'];
-const CIRCUITO = ETAPAS.filter(e => !e.aparte);   // las 4 etapas
+const CIRCUITO = ETAPAS.filter(e => !e.aparte);   // etapas del circuito, en orden
+const ORDEN = CIRCUITO.map(e => e.id);
+const vecina = (id, paso) => ORDEN[ORDEN.indexOf(id) + paso];
+const numEtapa = id => ORDEN.indexOf(id) + 1;   // número que se muestra (1 a 5)
 const VENCIDAS = 5;
 const nombreEtapa = id => (ETAPAS.find(e => e.id === id) || {}).nombre || '';
 
@@ -603,7 +607,7 @@ function render(){
     return `
     <section class="col" data-etapa="${e.id}" style="--c:${e.color};--ct:${e.ct}">
       <div class="col-head">
-        <div class="col-title"><span>${e.id}) ${esc(e.nombre)}</span><span class="count">${items.length}</span></div>
+        <div class="col-title"><span>${numEtapa(e.id)}) ${esc(e.nombre)}</span><span class="count">${items.length}</span></div>
         <div class="col-sub">${esc(e.resp)}</div>
         <div class="col-sum"><div class="stat"><small>Pallets</small><b>${fmtNum(pallets)}</b></div><div class="stat"><small>Monto</small><b>${fmtPlata(cotizado)}</b></div></div>
       </div>
@@ -628,7 +632,7 @@ function render(){
 
   // Resumen del hero (respeta filtros y búsqueda)
   const enCurso = visibles.filter(l => l.etapa >= 1 && l.etapa <= 3);
-  const pagadas = visibles.filter(l => l.etapa === 4);
+  const pagadas = visibles.filter(l => l.etapa === 4 || l.etapa === 6);   // cobradas (incluye entregadas)
   const suma = (arr, k) => arr.reduce((s,l) => s + Number(l[k]||0), 0);
   $('#kVentas').textContent = enCurso.length;
   $('#kPallets').textContent = fmtNum(suma(enCurso,'pallets'));
@@ -658,8 +662,8 @@ function card(l){
       ${l.etapa === VENCIDAS
         ? `<button class="reactivar" data-reactivar title="Pasar a 2) Cotizado · Seguimiento">↺ Volver a seguimiento</button>`
         : `<div style="display:flex;gap:4px">
-        <button data-move="-1" ${l.etapa===1?'disabled':''} title="Etapa anterior">←</button>
-        <button data-move="1" ${l.etapa===4?'disabled':''} title="Siguiente etapa">→</button>
+        <button data-move="-1" ${vecina(l.etapa,-1)===undefined?'disabled':''} title="Etapa anterior">←</button>
+        <button data-move="1" ${vecina(l.etapa,1)===undefined?'disabled':''} title="Siguiente etapa">→</button>
       </div>`}
       ${contacto ? `<a class="wa ${contacto.cls}" href="${esc(contacto.href)}" target="_blank" rel="noopener">${contacto.texto}</a>` : ''}
       <span class="age">${hace(l.actualizado)}</span>
@@ -693,7 +697,7 @@ zona.addEventListener('click', e => {
   if (e.target.closest('a')) return;
   if (e.target.closest('[data-reactivar]')){ moverA(c.dataset.id, 2); return; }
   const mv = e.target.closest('[data-move]');
-  if (mv){ const l = leads.find(x => x.id === c.dataset.id); moverA(l.id, l.etapa + Number(mv.dataset.move)); return; }
+  if (mv){ const l = leads.find(x => x.id === c.dataset.id); const d = vecina(l.etapa, Number(mv.dataset.move)); if (d !== undefined) moverA(l.id, d); return; }
   abrir(c.dataset.id);
 });
 zona.addEventListener('dragstart', e => {
@@ -717,7 +721,7 @@ zona.addEventListener('drop', e => {
 /* ===== Modal crear / editar ===== */
 const dlg = $('#dlg'), form = $('#form');
 let editId = null, draftId = null, notasTmp = [], archivosTmp = [], subidosEnSesion = [], guardado = false, subiendo = 0;
-$('#selEtapa').innerHTML = ETAPAS.map(e => `<option value="${e.id}">${e.aparte ? esc(e.nombre) + ' (aparte)' : e.id + ') ' + esc(e.nombre)}</option>`).join('');
+$('#selEtapa').innerHTML = ETAPAS.map(e => `<option value="${e.id}">${e.aparte ? esc(e.nombre) + ' (aparte)' : numEtapa(e.id) + ') ' + esc(e.nombre)}</option>`).join('');
 $('#selLleva').innerHTML = '<option value="">—</option>' + COMERCIALES.map(c => `<option>${esc(c)}</option>`).join('');
 $('#fLleva').innerHTML += COMERCIALES.map(c => `<option>${esc(c)}</option>`).join('');
 
