@@ -661,30 +661,64 @@ let vistaInicial = 'horizontal';
 try{ vistaInicial = localStorage.getItem('baly_vista') || (innerWidth < 700 ? 'vertical' : 'horizontal'); }catch(e){}
 setVista(vistaInicial);
 
-/* ===== Exportar / Importar respaldo ===== */
-$('#btnExport').onclick = () => {
-  const blob = new Blob([JSON.stringify(leads, null, 2)], {type:'application/json'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `baly-pipeline-${new Date().toISOString().slice(0,10)}.json`;
-  a.click(); URL.revokeObjectURL(a.href);
+/* ===== Exportar / Importar respaldo (incluye los archivos adjuntos) ===== */
+const aBase64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+const deBase64 = (b64, tipo) => { const bin = atob(b64); const u = new Uint8Array(bin.length); for (let k = 0; k < bin.length; k++) u[k] = bin.charCodeAt(k); return new Blob([u], { type: tipo || 'application/octet-stream' }); };
+
+$('#btnExport').onclick = async () => {
+  const btn = $('#btnExport'); btn.disabled = true; btn.textContent = 'Exportando…';
+  try{
+    const copia = structuredClone(leads);
+    let faltan = 0;
+    for (const l of copia){
+      for (const a of (l.archivos || [])){
+        try{
+          const blob = a.url ? await (await fetch(a.url)).blob() : await idb.get(a.id);
+          if (blob) a.datos = await aBase64(blob); else faltan++;
+        }catch(e){ faltan++; }
+      }
+    }
+    const out = new Blob([JSON.stringify(copia)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(out);
+    a.download = `baly-ventas-respaldo-${new Date().toISOString().slice(0,10)}.json`;
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    if (faltan) alert(`${faltan} archivo(s) no se encontraron y no van en el respaldo.`);
+  } finally { btn.disabled = false; btn.textContent = 'Exportar'; }
 };
 $('#btnImport').onclick = () => $('#fileImport').click();
 $('#fileImport').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
+  e.target.value = '';
+  let data;
+  try{ data = JSON.parse(await f.text()); if (!Array.isArray(data)) throw new Error(); }
+  catch(err){ alert('El archivo no es un respaldo válido.'); return; }
+  const nArch = data.reduce((s,l) => s + (l.archivos || []).filter(a => a.datos).length, 0);
+  if (!confirm(`Se van a cargar ${data.length} ventas${nArch ? ` y ${nArch} archivos` : ''} (las que tengan el mismo ID se reemplazan). ¿Seguir?`)) return;
+  const btn = $('#btnImport'); btn.disabled = true;
+  let errores = 0;
   try{
-    const data = JSON.parse(await f.text());
-    if (!Array.isArray(data)) throw new Error();
-    if (!confirm(`Se van a cargar ${data.length} ventas (las que tengan el mismo ID se reemplazan). ¿Seguir?`)) return;
-    for (const l of data){
+    for (const [n, l] of data.entries()){
+      btn.textContent = `Importando ${n + 1}/${data.length}…`;
+      const archivos = [];
+      for (const a of (l.archivos || [])){
+        if (!a.datos){ archivos.push(a); continue; }
+        try{
+          const file = new File([deBase64(a.datos, a.tipo)], a.nombre || 'archivo', { type: a.tipo || '' });
+          const meta = await files.subir(file);
+          meta.fecha = a.fecha || meta.fecha;
+          archivos.push(meta);
+        }catch(err){ errores++; }
+      }
+      l.archivos = archivos;
       const i = leads.findIndex(x => x.id === l.id);
       if (i >= 0) leads[i] = l; else leads.push(l);
-      if (useApi) await store.save(l);
+      try{ if (useApi) await store.save(l); }catch(err){ errores++; }
     }
     if (!useApi) store.persistLocal();
     render();
-  }catch(err){ alert('El archivo no es un respaldo válido.'); }
-  e.target.value = '';
+    alert(errores ? `Importado, pero hubo ${errores} error(es). Revisá las ventas.` : `Listo: se importaron ${data.length} ventas.`);
+  } finally { btn.disabled = false; btn.textContent = 'Importar'; }
 };
 
 /* ===== Inicio ===== */
