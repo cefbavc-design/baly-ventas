@@ -54,7 +54,7 @@
 
   .board{display:grid;grid-template-columns:repeat(4,minmax(260px,1fr));gap:14px;padding:16px;overflow-x:auto;min-height:calc(100vh - 66px)}
   .col{background:#ebeae5;border-radius:var(--radius);display:flex;flex-direction:column;min-height:300px}
-  .col.drag-over{outline:2px dashed var(--muted)}
+  .col.drag-over,.vencidas.drag-over{outline:2px dashed var(--muted)}
   .col-head{padding:12px 12px 8px;border-top:4px solid var(--c);border-radius:var(--radius) var(--radius) 0 0;background:var(--panel)}
   .col-title{display:flex;justify-content:space-between;align-items:center;font-weight:800;font-size:13px;text-transform:uppercase;letter-spacing:.3px}
   .count{background:var(--c);color:var(--ct);font-weight:700;font-size:12px;border-radius:99px;padding:1px 8px}
@@ -120,6 +120,23 @@
   .drop:hover,.drop.over{border-color:var(--black);color:var(--ink);background:#fffbe6}
   .drop b{color:var(--ink)}
   .uploading{font-size:12px;color:var(--muted)}
+
+  /* Vencidas: aparte del circuito */
+  .vencidas{max-width:none;margin:0 16px 24px;border:2px dashed #c9c8c2;border-radius:var(--radius);background:#f0efea}
+  .board.vertical + .vencidas{max-width:1100px;margin:0 auto 24px}
+  .venc-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 14px;cursor:pointer;user-select:none}
+  .venc-head h3{margin:0;font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:.3px;color:#555}
+  .venc-head .count{background:#9a9a9a;color:#fff}
+  .venc-head small{color:var(--muted);font-size:12px}
+  .venc-head .tot{margin-left:auto;font-size:12px;color:#555}
+  .venc-head .tot b{font-size:14px;color:#333}
+  .venc-head .flecha{font-size:12px;color:#555;transition:transform .15s}
+  .vencidas.abierta .venc-head .flecha{transform:rotate(90deg)}
+  .venc-cards{display:none;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px;padding:0 12px 12px}
+  .vencidas.abierta .venc-cards{display:grid}
+  .vencidas .card{border-left-color:#9a9a9a;opacity:.92}
+  .vencidas .card .name{color:#444}
+  .reactivar{font-size:12px;padding:4px 8px}
 
   /* Selector de vista */
   .views{display:flex;border:1px solid var(--black);border-radius:8px;overflow:hidden}
@@ -234,7 +251,10 @@
   </div>
 </section>
 
+<div id="zona">
 <main class="board" id="board"></main>
+<section class="vencidas" id="vencidas"></section>
+</div>
 
 <dialog id="dlg">
   <form id="form" method="dialog">
@@ -287,8 +307,12 @@ const ETAPAS = [
   { id:2, nombre:'Cotizado · Seguimiento',           resp:'Seguimiento y persistencia',   color:'var(--s2)', ct:'#000' },
   { id:3, nombre:'Pendiente · Se confirma con pago', resp:'Esperando el pago',            color:'var(--s3)', ct:'#fff' },
   { id:4, nombre:'Pagado · Derivar a Operaciones',   resp:'Pasar a Operaciones',          color:'var(--s4)', ct:'var(--yellow)' },
+  { id:5, nombre:'Vencidas',                         resp:'Fuera del circuito: cotización vencida', color:'#9a9a9a', ct:'#fff', aparte:true },
 ];
 const COMERCIALES = ['César', 'Sandro', 'Valentín'];
+const CIRCUITO = ETAPAS.filter(e => !e.aparte);   // las 4 etapas
+const VENCIDAS = 5;
+const nombreEtapa = id => (ETAPAS.find(e => e.id === id) || {}).nombre || '';
 
 /* ===== Almacenamiento =====
    Con servidor: cada cambio entra a una cola de pendientes (guardada en el navegador) y se envía
@@ -561,7 +585,7 @@ function render(){
     (!fl || l.lleva === fl) &&
     (!q || [l.cliente,l.ciudad,l.telefono,l.lleva].join(' ').toLowerCase().includes(q))
   );
-  $('#board').innerHTML = ETAPAS.map(e => {
+  $('#board').innerHTML = CIRCUITO.map(e => {
     const items = visibles.filter(l => l.etapa === e.id).sort((a,b) => b.actualizado.localeCompare(a.actualizado));
     const pallets = items.reduce((s,l) => s + Number(l.pallets||0), 0);
     const cotizado = items.reduce((s,l) => s + Number(l.cotizacion||0), 0);
@@ -578,8 +602,21 @@ function render(){
     </section>`;
   }).join('');
 
+  // Vencidas: aparte, no suman a los totales del circuito
+  const venc = visibles.filter(l => l.etapa === VENCIDAS).sort((a,b) => String(b.actualizado).localeCompare(String(a.actualizado)));
+  const vs = $('#vencidas');
+  vs.classList.toggle('abierta', vencidasAbierta);
+  vs.dataset.etapa = VENCIDAS;
+  vs.innerHTML = `
+    <div class="venc-head" id="vencHead" title="Mostrar u ocultar">
+      <span class="flecha">▶</span><h3>Vencidas</h3><span class="count">${venc.length}</span>
+      <small>Fuera del circuito · no suman a los totales · se reactivan con "Volver a seguimiento"</small>
+      <span class="tot">Monto <b>${fmtPlata(venc.reduce((s,l) => s + Number(l.cotizacion||0), 0))}</b></span>
+    </div>
+    <div class="venc-cards">${venc.length ? venc.map(card).join('') : '<div class="empty">No hay cotizaciones vencidas</div>'}</div>`;
+
   // Resumen del hero (respeta filtros y búsqueda)
-  const enCurso = visibles.filter(l => l.etapa !== 4);
+  const enCurso = visibles.filter(l => l.etapa >= 1 && l.etapa <= 3);
   const pagadas = visibles.filter(l => l.etapa === 4);
   const suma = (arr, k) => arr.reduce((s,l) => s + Number(l[k]||0), 0);
   $('#kVentas').textContent = enCurso.length;
@@ -607,10 +644,12 @@ function card(l){
     ${meta ? `<div class="meta">${meta}</div>` : ''}
     ${nota ? `<div class="last-note">${esc(nota)}</div>` : ''}
     <div class="card-actions">
-      <div style="display:flex;gap:4px">
+      ${l.etapa === VENCIDAS
+        ? `<button class="reactivar" data-reactivar title="Pasar a 2) Cotizado · Seguimiento">↺ Volver a seguimiento</button>`
+        : `<div style="display:flex;gap:4px">
         <button data-move="-1" ${l.etapa===1?'disabled':''} title="Etapa anterior">←</button>
         <button data-move="1" ${l.etapa===4?'disabled':''} title="Siguiente etapa">→</button>
-      </div>
+      </div>`}
       ${contacto ? `<a class="wa ${contacto.cls}" href="${esc(contacto.href)}" target="_blank" rel="noopener">${contacto.texto}</a>` : ''}
       <span class="age">${hace(l.actualizado)}</span>
     </div>
@@ -620,45 +659,54 @@ function card(l){
 /* ===== Mover etapa ===== */
 async function moverA(id, etapa){
   const l = leads.find(x => x.id === id);
-  if (!l || etapa < 1 || etapa > 4 || l.etapa === etapa) return;
+  if (!l || !ETAPAS.some(e => e.id === etapa) || l.etapa === etapa) return;
   const prev = l.etapa;
   l.etapa = etapa; l.actualizado = new Date().toISOString();
   l.notas = l.notas || [];
-  l.notas.push({ texto:`Movido de "${ETAPAS[prev-1].nombre}" a "${ETAPAS[etapa-1].nombre}"`, fecha:l.actualizado, auto:true });
+  l.notas.push({ texto:`Movido de "${nombreEtapa(prev)}" a "${nombreEtapa(etapa)}"`, fecha:l.actualizado, auto:true });
   render();
   try{ await store.save(l); }catch(e){ alert(e.message); }
 }
 
 const board = $('#board');
-board.addEventListener('click', e => {
+const zona = $('#zona');
+let vencidasAbierta = false;
+try{ vencidasAbierta = localStorage.getItem('baly_vencidas_abierta') === '1'; }catch(e){}
+zona.addEventListener('click', e => {
+  if (e.target.closest('#vencHead')){
+    vencidasAbierta = !vencidasAbierta;
+    try{ localStorage.setItem('baly_vencidas_abierta', vencidasAbierta ? '1' : '0'); }catch(err){}
+    $('#vencidas').classList.toggle('abierta', vencidasAbierta); return;
+  }
   const c = e.target.closest('.card'); if (!c) return;
   if (e.target.closest('a')) return;
+  if (e.target.closest('[data-reactivar]')){ moverA(c.dataset.id, 2); return; }
   const mv = e.target.closest('[data-move]');
   if (mv){ const l = leads.find(x => x.id === c.dataset.id); moverA(l.id, l.etapa + Number(mv.dataset.move)); return; }
   abrir(c.dataset.id);
 });
-board.addEventListener('dragstart', e => {
+zona.addEventListener('dragstart', e => {
   const c = e.target.closest('.card'); if (!c) return;
   e.dataTransfer.setData('text/plain', c.dataset.id); c.classList.add('dragging');
 });
-board.addEventListener('dragend', e => e.target.closest('.card')?.classList.remove('dragging'));
-board.addEventListener('dragover', e => {
-  const col = e.target.closest('.col'); if (!col) return;
+zona.addEventListener('dragend', e => e.target.closest('.card')?.classList.remove('dragging'));
+zona.addEventListener('dragover', e => {
+  const col = e.target.closest('.col, .vencidas'); if (!col) return;
   e.preventDefault();
-  document.querySelectorAll('.col').forEach(c => c.classList.toggle('drag-over', c === col));
+  document.querySelectorAll('.col, .vencidas').forEach(c => c.classList.toggle('drag-over', c === col));
 });
-board.addEventListener('dragleave', e => { if (!board.contains(e.relatedTarget)) document.querySelectorAll('.col').forEach(c => c.classList.remove('drag-over')); });
-board.addEventListener('drop', e => {
-  const col = e.target.closest('.col'); if (!col) return;
+zona.addEventListener('dragleave', e => { if (!zona.contains(e.relatedTarget)) document.querySelectorAll('.col, .vencidas').forEach(c => c.classList.remove('drag-over')); });
+zona.addEventListener('drop', e => {
+  const col = e.target.closest('.col, .vencidas'); if (!col) return;
   e.preventDefault();
-  document.querySelectorAll('.col').forEach(c => c.classList.remove('drag-over'));
+  document.querySelectorAll('.col, .vencidas').forEach(c => c.classList.remove('drag-over'));
   moverA(e.dataTransfer.getData('text/plain'), Number(col.dataset.etapa));
 });
 
 /* ===== Modal crear / editar ===== */
 const dlg = $('#dlg'), form = $('#form');
 let editId = null, draftId = null, notasTmp = [], archivosTmp = [], subidosEnSesion = [], guardado = false, subiendo = 0;
-$('#selEtapa').innerHTML = ETAPAS.map(e => `<option value="${e.id}">${e.id}) ${esc(e.nombre)}</option>`).join('');
+$('#selEtapa').innerHTML = ETAPAS.map(e => `<option value="${e.id}">${e.aparte ? esc(e.nombre) + ' (aparte)' : e.id + ') ' + esc(e.nombre)}</option>`).join('');
 $('#selLleva').innerHTML = '<option value="">—</option>' + COMERCIALES.map(c => `<option>${esc(c)}</option>`).join('');
 $('#fLleva').innerHTML += COMERCIALES.map(c => `<option>${esc(c)}</option>`).join('');
 
