@@ -69,6 +69,7 @@
   .card-actions{display:flex;justify-content:space-between;align-items:center;margin-top:8px}
   .card-actions button{padding:4px 8px;font-size:12px}
   .wa{color:#128c4b;text-decoration:none;font-size:12px;font-weight:600}
+  .wa.crm{color:var(--black);text-decoration:underline;text-decoration-color:var(--yellow);text-decoration-thickness:2px;text-underline-offset:3px}
   .age{font-size:11px;color:var(--muted)}
 
   dialog{border:none;border-radius:14px;padding:0;width:min(560px,94vw);box-shadow:0 20px 60px rgba(0,0,0,.25)}
@@ -380,11 +381,22 @@ function hace(iso){
   const d = Math.floor((Date.now() - new Date(iso)) / 86400000);
   return d <= 0 ? 'hoy' : d === 1 ? 'hace 1 día' : `hace ${d} días`;
 }
-function waLink(tel){
-  let d = String(tel).replace(/\D/g,'');
+// Teléfono en formato internacional argentino de celular: 549 + característica + número (ej. 5491123829264)
+function telAR(tel){
+  let d = String(tel || '').replace(/\D/g,'');
   if (!d) return '';
-  if (!d.startsWith('54')) d = '549' + d.replace(/^0/,'').replace(/^15/,'');
-  return 'https://wa.me/' + d;
+  d = d.replace(/^00/,'');
+  if (d.startsWith('54')) d = d.slice(2);
+  d = d.replace(/^9/,'').replace(/^0/,'');
+  return d ? '549' + d : '';
+}
+// CRM → panel de Rimnexo · WPP (o sin origen) → WhatsApp
+function contactoLink(l){
+  const n = telAR(l.telefono);
+  if (!n) return null;
+  return l.origen === 'CRM'
+    ? { href: 'https://sdr.rimnexo.com/panel?phone=' + n, texto: 'Abrir en CRM', cls: 'crm' }
+    : { href: 'https://wa.me/' + n, texto: 'WhatsApp', cls: '' };
 }
 
 /* ===== Render ===== */
@@ -429,7 +441,7 @@ function render(){
 }
 function card(l){
   const nota = l.notas?.length ? l.notas[l.notas.length-1].texto : '';
-  const wa = waLink(l.telefono);
+  const contacto = contactoLink(l);
   const meta = [
     l.pallets ? `<span><b>${fmtNum(l.pallets)}</b> pallets</span>` : '',
     l.cotizacion ? `<span>💲 <b>${fmtPlata(l.cotizacion)}</b></span>` : '',
@@ -447,7 +459,7 @@ function card(l){
         <button data-move="-1" ${l.etapa===1?'disabled':''} title="Etapa anterior">←</button>
         <button data-move="1" ${l.etapa===4?'disabled':''} title="Siguiente etapa">→</button>
       </div>
-      ${wa ? `<a class="wa" href="${wa}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+      ${contacto ? `<a class="wa ${contacto.cls}" href="${esc(contacto.href)}" target="_blank" rel="noopener">${contacto.texto}</a>` : ''}
       <span class="age">${hace(l.actualizado)}</span>
     </div>
   </article>`;
