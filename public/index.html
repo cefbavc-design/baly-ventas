@@ -36,7 +36,21 @@
   .primary{background:var(--ink);color:#fff;border-color:var(--ink)}
   .primary:hover{background:#000}
   .danger{color:var(--danger);border-color:#f3c4c4}
-  .mode{font-size:12px;color:var(--muted);padding:4px 8px;border-radius:99px;background:#eef0f4}
+  .mode{font-size:12px;color:var(--muted);padding:4px 8px;border-radius:99px;background:#eef0f4;border:none;font-weight:600;white-space:nowrap}
+  header .mode.ok{background:rgba(0,0,0,.08);color:var(--black)}
+  header .mode.ok::first-letter{color:#128c4b}
+  header .mode.guardando{background:rgba(0,0,0,.08)}
+  header .mode.error{background:var(--danger);color:#fff;cursor:pointer;animation:latido 1.2s ease-in-out infinite}
+  @keyframes latido{50%{opacity:.75}}
+  .alerta{display:none;background:#c10b20;color:#fff;padding:12px 16px;font-weight:600;font-size:14px}
+  .alerta.on{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .alerta.aviso{background:#fff3c4;color:#000;border-bottom:2px solid var(--yellow)}
+  .alerta span{flex:1;min-width:220px}
+  .alerta button{background:#fff;color:#000;border-color:#fff;font-weight:700}
+  .alerta.aviso button{background:var(--black);color:var(--yellow);border-color:var(--black)}
+  .alerta button.sec{background:transparent;color:inherit;border-color:currentColor}
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--black);color:#fff;padding:10px 16px;border-radius:10px;font-weight:600;font-size:13px;z-index:50;box-shadow:0 8px 24px rgba(0,0,0,.3);display:none;max-width:90vw}
+  .toast.on{display:block}
 
   .board{display:grid;grid-template-columns:repeat(4,minmax(260px,1fr));gap:14px;padding:16px;overflow-x:auto;min-height:calc(100vh - 66px)}
   .col{background:#ebeae5;border-radius:var(--radius);display:flex;flex-direction:column;min-height:300px}
@@ -188,7 +202,7 @@
     <input id="q" type="search" placeholder="Buscar cliente, ciudad, tel…">
     <select id="fLleva"><option value="">Todos los comerciales</option></select>
     <select id="fOrigen"><option value="">WPP y CRM</option><option>WPP</option><option>CRM</option></select>
-    <span class="mode" id="mode">…</span>
+    <button type="button" class="mode" id="mode" title="Estado del guardado">…</button>
     <button id="btnExport" title="Descargar respaldo">Exportar</button>
     <button id="btnImport" title="Cargar respaldo">Importar</button>
     <input id="fileImport" type="file" accept="application/json" hidden>
@@ -196,6 +210,9 @@
   </div>
 </header>
 
+<div class="alerta" id="alertaDisco"><span>⚠ El servidor está guardando en un disco temporal: lo que se cargue puede perderse en la próxima actualización. No cargues ventas hasta que se solucione.</span></div>
+<div class="alerta aviso" id="alertaRestaurar"><span id="alertaRestaurarTxt"></span><button type="button" id="btnRestaurar">Restaurar ahora</button><button type="button" class="sec" id="btnBajarCopia">Descargar copia</button></div>
+<div class="toast" id="toast"></div>
 <section class="hero">
   <div class="hero-in">
     <div class="hero-txt">
@@ -273,37 +290,171 @@ const ETAPAS = [
 ];
 const COMERCIALES = ['César', 'Sandro', 'Valentín'];
 
-/* ===== Almacenamiento: usa /api/ventas si existe (Railway), si no localStorage ===== */
+/* ===== Almacenamiento =====
+   Con servidor: cada cambio entra a una cola de pendientes (guardada en el navegador) y se envía
+   al servidor con reintentos hasta que confirma. Además cada navegador guarda una copia espejo de
+   las ventas: si el servidor llegara a perder datos, la página lo detecta y ofrece restaurarlos.
+   Sin servidor (archivo abierto en la compu): todo queda en este navegador. */
 const API = '/api/ventas';
 const LS_KEY = 'baly_ventas_v1';
+const ESPEJO_KEY = 'baly_espejo_v2';
+const PEND_KEY = 'baly_pendientes_v1';
 let useApi = false;
 let leads = [];
+let almacenId = null;
+
+const ls = {
+  get(k, def){ try{ const v = localStorage.getItem(k); return v ? JSON.parse(v) : def; }catch(e){ return def; } },
+  set(k, v){ try{ localStorage.setItem(k, JSON.stringify(v)); return true; }catch(e){ return false; } },
+};
+let pend = ls.get(PEND_KEY, { put:{}, del:{} });
+const nPend = () => Object.keys(pend.put).length + Object.keys(pend.del).length;
+const guardarPend = () => ls.set(PEND_KEY, pend);
+function espejar(){ if (useApi && almacenId) ls.set(ESPEJO_KEY, { almacen: almacenId, ventas: leads, t: Date.now() }); }
+
+function toast(msg, ms = 3500){
+  const t = $('#toast'); t.textContent = msg; t.classList.add('on');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), ms);
+}
+let estadoGuardado = 'ok';
+function pintarEstado(){
+  const m = $('#mode'); if (!m) return;
+  if (!useApi){ m.className = 'mode'; m.textContent = '● Solo este navegador'; m.title = 'Sin servidor: los datos quedan en este navegador'; return; }
+  const n = nPend();
+  if (estadoGuardado === 'error' && n){ m.className = 'mode error'; m.textContent = `⚠ Sin guardar (${n}) · reintentar`; m.title = 'No se pudo guardar en el servidor. Se reintenta solo; tocá para reintentar ya. No cierres la página.'; }
+  else if (n){ m.className = 'mode guardando'; m.textContent = '● Guardando…'; m.title = 'Enviando cambios al servidor'; }
+  else { m.className = 'mode ok'; m.textContent = '● Guardado'; m.title = 'Todo está guardado en el servidor'; }
+}
+
+let sincronizando = null, reintento = null;
+function sincronizar(){
+  if (!useApi) return Promise.resolve();
+  if (sincronizando) return sincronizando.then(() => nPend() ? sincronizar() : undefined);
+  clearTimeout(reintento);
+  sincronizando = (async () => {
+    estadoGuardado = 'guardando'; pintarEstado();
+    try{
+      for (const id of Object.keys(pend.del)){
+        const r = await fetch(API + '/' + encodeURIComponent(id), { method:'DELETE' });
+        if (!r.ok && r.status !== 404) throw new Error('HTTP ' + r.status);
+        revisarAlmacen(r);
+        delete pend.del[id]; guardarPend();
+      }
+      for (const id of Object.keys(pend.put)){
+        const l = leads.find(x => x.id === id);
+        if (l){
+          const r = await fetch(API + '/' + encodeURIComponent(id), {
+            method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(l) });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          revisarAlmacen(r);
+        }
+        delete pend.put[id]; guardarPend();
+      }
+      estadoGuardado = 'ok';
+    }catch(e){
+      estadoGuardado = 'error';
+      toast('⚠ No se pudo guardar. Se reintenta solo en unos segundos; no cierres la página.', 5000);
+      reintento = setTimeout(sincronizar, 8000);
+    }finally{
+      sincronizando = null; pintarEstado();
+    }
+  })();
+  return sincronizando;
+}
+// Si el servidor responde con otro identificador de almacén, es que sus datos se reiniciaron
+function revisarAlmacen(r){
+  const id = r.headers.get('X-Data-Id');
+  if (id && almacenId && id !== almacenId){ almacenId = id; chequearRestauracion(); }
+}
 
 const store = {
   async load(){
     try{
       const r = await fetch(API, {cache:'no-store'});
-      if (r.ok && (r.headers.get('content-type')||'').includes('json')){ useApi = true; return await r.json(); }
+      if (r.ok && (r.headers.get('content-type')||'').includes('json')){
+        useApi = true; almacenId = r.headers.get('X-Data-Id');
+        return combinarConPendientes(await r.json());
+      }
     }catch(e){}
     useApi = false;
-    try{ return JSON.parse(localStorage.getItem(LS_KEY)) || []; }catch(e){ return []; }
+    return ls.get(LS_KEY, []);
   },
-  async save(lead){
-    if (useApi){
-      const r = await fetch(API + '/' + encodeURIComponent(lead.id), {
-        method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(lead)
-      });
-      if (!r.ok) throw new Error('No se pudo guardar en el servidor');
-    } else this.persistLocal();
+  save(lead){
+    if (!useApi){ this.persistLocal(); return Promise.resolve(); }
+    delete pend.del[lead.id]; pend.put[lead.id] = true; guardarPend(); espejar(); pintarEstado();
+    return sincronizar();
   },
-  async remove(id){
-    if (useApi){
-      const r = await fetch(API + '/' + encodeURIComponent(id), {method:'DELETE'});
-      if (!r.ok) throw new Error('No se pudo eliminar en el servidor');
-    } else this.persistLocal();
+  remove(id){
+    if (!useApi){ this.persistLocal(); return Promise.resolve(); }
+    delete pend.put[id]; pend.del[id] = true; guardarPend(); espejar(); pintarEstado();
+    return sincronizar();
   },
-  persistLocal(){ try{ localStorage.setItem(LS_KEY, JSON.stringify(leads)); }catch(e){ alert('No se pudo guardar localmente'); } }
+  persistLocal(){ if (!ls.set(LS_KEY, leads)) alert('No se pudo guardar en este navegador (¿memoria llena?)'); }
 };
+
+// Lo que vino del servidor + los cambios de este navegador que todavía no llegaron
+function combinarConPendientes(lista){
+  const espejo = ls.get(ESPEJO_KEY, null);
+  const locales = new Map(((espejo && espejo.ventas) || []).map(v => [v.id, v]));
+  let out = lista.filter(v => !pend.del[v.id]);
+  for (const id of Object.keys(pend.put)){
+    const v = locales.get(id) || leads.find(x => x.id === id);
+    if (!v){ delete pend.put[id]; continue; }
+    out = out.filter(x => x.id !== id); out.push(v);
+  }
+  guardarPend();
+  return out;
+}
+
+/* ----- Restaurar si el servidor perdió datos ----- */
+let copiaParaRestaurar = null;
+function chequearRestauracion(){
+  const espejo = ls.get(ESPEJO_KEY, null);
+  if (!useApi || !espejo || !espejo.almacen || !almacenId || espejo.almacen === almacenId) return false;
+  const enServidor = new Map(leads.map(v => [v.id, v]));
+  const faltan = (espejo.ventas || []).filter(v => {
+    const s = enServidor.get(v.id);
+    return !s || String(v.actualizado || '') > String(s.actualizado || '');
+  });
+  if (!faltan.length){ espejar(); return false; }
+  copiaParaRestaurar = { ...espejo, faltan };
+  const cuando = new Date(espejo.t).toLocaleString('es-AR', { day:'2-digit', month:'2-digit', hour:'2-digit', minute:'2-digit' });
+  $('#alertaRestaurarTxt').textContent =
+    `⚠ El servidor no tiene ${faltan.length} ${faltan.length === 1 ? 'venta' : 'ventas'} que este navegador sí guardó (copia del ${cuando}). Restaurá antes de seguir cargando.`;
+  $('#alertaRestaurar').classList.add('on');
+  return true;
+}
+async function restaurar(){
+  if (!copiaParaRestaurar) return;
+  const btn = $('#btnRestaurar'); btn.disabled = true; btn.textContent = 'Restaurando…';
+  let sinArchivo = 0;
+  try{
+    for (const v of copiaParaRestaurar.faltan){
+      const archivos = [];
+      for (const a of (v.archivos || [])){
+        if (!a.url){ archivos.push(a); continue; }
+        let existe = false;
+        try{ const ctl = new AbortController(); const r = await fetch(a.url, { signal: ctl.signal }); existe = r.ok; ctl.abort(); }catch(e){}
+        if (existe){ archivos.push(a); continue; }
+        const blob = await idb.get('srv:' + a.id).catch(() => null);
+        if (!blob){ sinArchivo++; continue; }
+        try{
+          const meta = await files.subir(new File([blob], a.nombre || 'archivo', { type: a.tipo || blob.type || '' }));
+          meta.fecha = a.fecha || meta.fecha; archivos.push(meta);
+        }catch(e){ sinArchivo++; archivos.push(a); }
+      }
+      const restaurada = { ...v, archivos };
+      const i = leads.findIndex(x => x.id === v.id);
+      if (i >= 0) leads[i] = restaurada; else leads.push(restaurada);
+      delete pend.del[v.id]; pend.put[v.id] = true;
+    }
+    guardarPend(); espejar(); render();
+    await sincronizar();
+    $('#alertaRestaurar').classList.remove('on');
+    copiaParaRestaurar = null;
+    alert(`Listo: se restauraron las ventas.${sinArchivo ? `\n${sinArchivo} archivo(s) adjunto(s) no estaban en este navegador y hay que volver a subirlos.` : ''}`);
+  } finally { btn.disabled = false; btn.textContent = 'Restaurar ahora'; }
+}
 
 /* ===== Archivos: en el servidor (/api/archivos) o, sin servidor, en este navegador (IndexedDB) ===== */
 const API_FILES = '/api/archivos';
@@ -336,6 +487,7 @@ const files = {
         'Content-Type': f.type || 'application/octet-stream', 'X-Filename': encodeURIComponent(f.name) } });
       if (!r.ok) throw new Error(`No se pudo subir "${f.name}"`);
       const j = await r.json(); meta.id = j.id; meta.url = j.url || `${API_FILES}/${j.id}`;
+      idb.put('srv:' + meta.id, f).catch(() => {});   // copia espejo en este navegador
     } else {
       await idb.put(meta.id, f);
     }
@@ -343,7 +495,7 @@ const files = {
   },
   async borrar(meta){
     try{
-      if (meta.url) await fetch(meta.url, { method:'DELETE' });
+      if (meta.url){ await fetch(meta.url, { method:'DELETE' }); idb.del('srv:' + meta.id).catch(() => {}); }
       else await idb.del(meta.id);
     }catch(e){}
   },
@@ -722,15 +874,49 @@ $('#fileImport').onchange = async e => {
 };
 
 /* ===== Inicio ===== */
+$('#mode').onclick = () => { if (useApi && nPend()) sincronizar(); };
+$('#btnRestaurar').onclick = restaurar;
+$('#btnBajarCopia').onclick = () => {
+  const espejo = ls.get(ESPEJO_KEY, null); if (!espejo) return;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(espejo.ventas)], {type:'application/json'}));
+  a.download = `baly-ventas-copia-navegador-${new Date().toISOString().slice(0,10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+};
+// No dejar cerrar la página con cambios sin guardar
+addEventListener('beforeunload', e => { if (useApi && nPend()){ e.preventDefault(); e.returnValue = ''; } });
+addEventListener('online', () => { if (useApi && nPend()) sincronizar(); });
+
 (async () => {
   leads = await store.load();
-  $('#mode').textContent = useApi ? '● Compartido' : '● Solo este navegador';
-  $('#mode').title = useApi ? 'Los datos se guardan en el servidor' : 'Sin servidor: los datos quedan en este navegador';
   render();
-  // En modo servidor, refresca cada 20s para ver cambios de otros comerciales
-  if (useApi) setInterval(async () => {
-    if (dlg.open) return;
-    try{ const r = await fetch(API, {cache:'no-store'}); if (r.ok){ leads = await r.json(); render(); } }catch(e){}
+  pintarEstado();
+  if (!useApi) return;
+
+  // ¿El servidor guarda en disco permanente?
+  try{
+    const est = await (await fetch('/api/estado', {cache:'no-store'})).json();
+    if (est && est.persistente === false) $('#alertaDisco').classList.add('on');
+  }catch(e){}
+
+  if (!chequearRestauracion()) espejar();
+  if (nPend()) sincronizar();
+
+  // Refresca cada 20s para ver cambios de otros comerciales (sin pisar lo que falta guardar acá)
+  setInterval(async () => {
+    if (dlg.open || sincronizando) return;
+    try{
+      const r = await fetch(API, {cache:'no-store'});
+      if (!r.ok) return;
+      const id = r.headers.get('X-Data-Id');
+      const lista = await r.json();
+      if (id && almacenId && id !== almacenId){
+        almacenId = id; leads = combinarConPendientes(lista); render(); chequearRestauracion();
+        return;
+      }
+      leads = combinarConPendientes(lista); render();
+      if (!copiaParaRestaurar) espejar();
+    }catch(e){}
   }, 20000);
 })();
 </script>

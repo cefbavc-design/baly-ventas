@@ -2,9 +2,10 @@
 // Servidor mínimo sin dependencias: sirve la página y guarda ventas y archivos.
 //
 // Variables de entorno:
-//   PORT          Puerto (Railway lo pone solo)
-//   DATA_DIR      Carpeta donde se guardan los datos (en Railway: el Volume, ej. /data)
-//   APP_PASSWORD  Si se define, la página pide usuario y contraseña (el usuario puede ser cualquiera)
+//   PORT                     Puerto (Railway lo pone solo)
+//   DATA_DIR                 Carpeta de datos. En Railway tiene que estar dentro del Volume (ej. /data)
+//   APP_PASSWORD             Si se define, la página pide usuario y contraseña (el usuario puede ser cualquiera)
+//   PERMITIR_DISCO_TEMPORAL  Solo para pruebas: "1" deja arrancar en Railway sin Volume (NO usar en producción)
 
 const http = require('http');
 const fs = require('fs');
@@ -13,32 +14,123 @@ const path = require('path');
 const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT) || 3000;
-const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
+const VOLUMEN_RAILWAY = process.env.RAILWAY_VOLUME_MOUNT_PATH || '';
+const DATA_DIR = path.resolve(process.env.DATA_DIR || VOLUMEN_RAILWAY || path.join(__dirname, 'data'));
 const FILES_DIR = path.join(DATA_DIR, 'archivos');
+const BACKUP_DIR = path.join(DATA_DIR, 'respaldos');
 const VENTAS_FILE = path.join(DATA_DIR, 'ventas.json');
+const META_FILE = path.join(DATA_DIR, 'almacen.json');
 const INDEX_FILE = path.join(__dirname, 'public', 'index.html');
 const PASSWORD = process.env.APP_PASSWORD || '';
 const MAX_JSON = 2 * 1024 * 1024;        // 2 MB por venta
 const MAX_FILE = 25 * 1024 * 1024;       // 25 MB por archivo (igual que la página)
 const ID_RE = /^[a-z0-9_-]{1,64}$/i;
+const RESPALDO_CADA_MS = 60 * 60 * 1000; // una copia por hora como máximo
+const RESPALDOS_A_GUARDAR = 400;         // ~2 semanas de copias horarias
+
+function fatal(msg) {
+  console.error('\n' + '='.repeat(70) + '\n✖ ' + msg + '\n' + '='.repeat(70) + '\n');
+  process.exit(1);
+}
+
+/* ---------- ¿Los datos van a un disco permanente? ---------- */
+// Un Volume aparece como un punto de montaje propio. Si DATA_DIR no está dentro de uno,
+// los datos viven en el disco temporal del contenedor y se borran en cada deploy.
+function puntoDeMontaje(dir) {
+  try {
+    // Cada línea: ... <punto de montaje> ... - <tipo> <origen> ...  (se ignoran discos en memoria)
+    const TEMPORALES = new Set(['tmpfs', 'ramfs', 'overlay', 'proc', 'sysfs', 'devtmpfs', 'devpts', 'mqueue', 'cgroup', 'cgroup2']);
+    const montajes = fs.readFileSync('/proc/self/mountinfo', 'utf8').split('\n').filter(Boolean)
+      .map(l => { const [izq, der = ''] = l.split(' - '); return { m: (izq.split(' ')[4] || '').replace(/\\040/g, ' '), tipo: der.split(' ')[0] }; })
+      .filter(x => x.m && x.m !== '/' && !TEMPORALES.has(x.tipo))
+      .map(x => x.m);
+    return montajes
+      .filter(m => dir === m || dir.startsWith(m.endsWith('/') ? m : m + '/'))
+      .sort((a, b) => b.length - a.length)[0] || '';
+  } catch (e) { return ''; }
+}
+const EN_RAILWAY = Object.keys(process.env).some(k => k.startsWith('RAILWAY_'));
+const MONTAJE = puntoDeMontaje(DATA_DIR);
+const DENTRO_DEL_VOLUMEN = VOLUMEN_RAILWAY &&
+  (DATA_DIR === path.resolve(VOLUMEN_RAILWAY) || DATA_DIR.startsWith(path.resolve(VOLUMEN_RAILWAY) + path.sep));
+const PERSISTENTE = EN_RAILWAY ? Boolean(MONTAJE || DENTRO_DEL_VOLUMEN) : true;
+
+if (EN_RAILWAY && !PERSISTENTE && process.env.PERMITIR_DISCO_TEMPORAL !== '1') {
+  fatal(`Los datos irían a ${DATA_DIR}, que NO es un disco permanente: se borrarían en el próximo deploy.\n` +
+        `  Solución: en Railway agregá un Volume montado en /data y la variable DATA_DIR=/data.\n` +
+        `  El servidor no arranca para no perder ventas.`);
+}
 
 fs.mkdirSync(FILES_DIR, { recursive: true });
+fs.mkdirSync(BACKUP_DIR, { recursive: true });
+
+/* ---------- Identificador del almacén ---------- */
+// Cambia solo si el disco de datos es nuevo o se vació. La página lo usa para detectar
+// que el servidor perdió datos y ofrecer restaurarlos desde la copia del navegador.
+let almacen;
+try { almacen = JSON.parse(fs.readFileSync(META_FILE, 'utf8')); } catch (e) {}
+if (!almacen || !almacen.id) {
+  almacen = { id: crypto.randomBytes(9).toString('hex'), creado: new Date().toISOString() };
+  fs.writeFileSync(META_FILE, JSON.stringify(almacen));
+}
 
 /* ---------- Ventas: en memoria + archivo JSON (escritura atómica y en cola) ---------- */
-let ventas = new Map();
-try {
-  const arr = JSON.parse(fs.readFileSync(VENTAS_FILE, 'utf8'));
-  if (Array.isArray(arr)) arr.forEach(v => v && ID_RE.test(v.id) && ventas.set(v.id, v));
-} catch (e) { /* primera vez: no hay archivo */ }
+function ultimoRespaldo() {
+  try {
+    const f = fs.readdirSync(BACKUP_DIR).filter(n => /^ventas-.*\.json$/.test(n)).sort().pop();
+    return f ? path.join(BACKUP_DIR, f) : '';
+  } catch (e) { return ''; }
+}
 
+let ventas = new Map();
+{
+  let texto = null;
+  try { texto = fs.readFileSync(VENTAS_FILE, 'utf8'); }
+  catch (e) { if (e.code !== 'ENOENT') fatal(`No se pudo leer ${VENTAS_FILE}: ${e.message}`); }
+  if (texto !== null) {
+    let arr;
+    try { arr = JSON.parse(texto); if (!Array.isArray(arr)) throw new Error('no es una lista'); }
+    catch (e) {
+      // Archivo dañado: NO arrancar vacío (eso pisaría los datos). Se recupera del último respaldo.
+      const r = ultimoRespaldo();
+      fs.copyFileSync(VENTAS_FILE, VENTAS_FILE + '.danado-' + Date.now());
+      if (!r) fatal(`${VENTAS_FILE} está dañado y no hay respaldos. Se guardó una copia del archivo dañado.`);
+      console.error(`⚠ ${VENTAS_FILE} estaba dañado; se recupera desde ${r}`);
+      arr = JSON.parse(fs.readFileSync(r, 'utf8'));
+    }
+    arr.forEach(v => v && ID_RE.test(v.id) && ventas.set(v.id, v));
+  }
+}
+
+let ultimaCopia = 0;
+try { const r = ultimoRespaldo(); if (r) ultimaCopia = fs.statSync(r).mtimeMs; } catch (e) {}
+
+async function respaldar(forzar = false) {
+  if (!forzar && Date.now() - ultimaCopia < RESPALDO_CADA_MS) return;
+  if (!ventas.size) return;
+  const nombre = 'ventas-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+  await fsp.copyFile(VENTAS_FILE, path.join(BACKUP_DIR, nombre));
+  ultimaCopia = Date.now();
+  const viejos = (await fsp.readdir(BACKUP_DIR)).filter(n => /^ventas-.*\.json$/.test(n)).sort();
+  for (const n of viejos.slice(0, Math.max(0, viejos.length - RESPALDOS_A_GUARDAR))) {
+    await fsp.rm(path.join(BACKUP_DIR, n), { force: true });
+  }
+}
+
+// Escribe ventas.json de forma atómica. Si falla, el error llega a quien guardó
+// (la página muestra "Sin guardar" y reintenta) en lugar de responder OK.
 let cola = Promise.resolve();
 function persistir() {
-  cola = cola.then(async () => {
+  const tarea = cola.then(async () => {
     const tmp = VENTAS_FILE + '.tmp';
-    await fsp.writeFile(tmp, JSON.stringify([...ventas.values()]));
+    const fh = await fsp.open(tmp, 'w');
+    try { await fh.writeFile(JSON.stringify([...ventas.values()])); await fh.sync(); }
+    finally { await fh.close(); }
     await fsp.rename(tmp, VENTAS_FILE);
-  }).catch(err => console.error('Error guardando ventas:', err));
-  return cola;
+    try { await respaldar(); } catch (e) { console.error('No se pudo hacer el respaldo:', e.message); }
+  });
+  cola = tarea.catch(() => {});
+  return tarea;
 }
 
 /* ---------- Utilidades HTTP ---------- */
@@ -83,7 +175,7 @@ async function manejar(req, res) {
   const url = new URL(req.url, 'http://x');
   const p = url.pathname;
 
-  if (p === '/health') return enviar(res, 200, { ok: true });
+  if (p === '/health') return enviar(res, 200, { ok: true, persistente: PERSISTENTE });
 
   if (!autorizado(req)) {
     return enviar(res, 401, 'Se necesita contraseña', { 'WWW-Authenticate': 'Basic realm="Baly ventas", charset="UTF-8"' });
@@ -95,9 +187,20 @@ async function manejar(req, res) {
     return enviar(res, 200, html, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
   }
 
+  // Estado del almacenamiento (la página muestra una alarma si no es permanente)
+  if (p === '/api/estado' && req.method === 'GET') {
+    let respaldos = 0;
+    try { respaldos = (await fsp.readdir(BACKUP_DIR)).filter(n => /^ventas-/.test(n)).length; } catch (e) {}
+    return enviar(res, 200, {
+      almacen: almacen.id, persistente: PERSISTENTE, enRailway: EN_RAILWAY,
+      carpeta: DATA_DIR, montaje: MONTAJE || VOLUMEN_RAILWAY || null,
+      ventas: ventas.size, respaldos, ultimoRespaldo: ultimaCopia ? new Date(ultimaCopia).toISOString() : null,
+    }, { 'X-Data-Id': almacen.id });
+  }
+
   // Ventas
   if (p === '/api/ventas' && req.method === 'GET') {
-    return enviar(res, 200, [...ventas.values()]);
+    return enviar(res, 200, [...ventas.values()], { 'X-Data-Id': almacen.id });
   }
   let m = p.match(/^\/api\/ventas\/([^/]+)$/);
   if (m) {
@@ -109,14 +212,26 @@ async function manejar(req, res) {
       catch (e) { return enviar(res, e.status || 400, { error: e.status ? 'Demasiado grande' : 'JSON inválido' }); }
       if (!venta || typeof venta !== 'object' || Array.isArray(venta)) return enviar(res, 400, { error: 'Venta inválida' });
       venta.id = id;
+      const anterior = ventas.get(id);
       ventas.set(id, venta);
-      await persistir();
-      return enviar(res, 200, venta);
+      try { await persistir(); }
+      catch (e) {
+        if (anterior) ventas.set(id, anterior); else ventas.delete(id);
+        console.error('Error guardando ventas:', e);
+        return enviar(res, 507, { error: 'No se pudo guardar en disco' });
+      }
+      return enviar(res, 200, venta, { 'X-Data-Id': almacen.id });
     }
     if (req.method === 'DELETE') {
+      const anterior = ventas.get(id);
       ventas.delete(id);
-      await persistir();
-      return enviar(res, 200, { ok: true });
+      try { await persistir(); }
+      catch (e) {
+        if (anterior) ventas.set(id, anterior);
+        console.error('Error guardando ventas:', e);
+        return enviar(res, 507, { error: 'No se pudo guardar en disco' });
+      }
+      return enviar(res, 200, { ok: true }, { 'X-Data-Id': almacen.id });
     }
   }
 
@@ -177,7 +292,7 @@ async function manejar(req, res) {
   return enviar(res, 404, { error: 'No encontrado' });
 }
 
-http.createServer((req, res) => {
+const servidor = http.createServer((req, res) => {
   manejar(req, res).catch(err => {
     console.error(err);
     if (!res.headersSent) enviar(res, 500, { error: 'Error del servidor' });
@@ -185,5 +300,17 @@ http.createServer((req, res) => {
   });
 }).listen(PORT, () => {
   console.log(`Baly ventas escuchando en el puerto ${PORT}`);
-  console.log(`Datos en: ${DATA_DIR}${PASSWORD ? ' · con contraseña' : ' · SIN contraseña (definí APP_PASSWORD)'}`);
+  console.log(`Datos en: ${DATA_DIR} · ${PERSISTENTE ? 'disco permanente' + (MONTAJE ? ` (${MONTAJE})` : '') : '⚠ DISCO TEMPORAL'}` +
+              ` · ${ventas.size} ventas · almacén ${almacen.id}`);
+  console.log(PASSWORD ? 'Con contraseña' : 'SIN contraseña (definí APP_PASSWORD)');
+  respaldar(true).catch(e => console.error('No se pudo hacer el respaldo inicial:', e.message));
 });
+
+// Al apagar (deploy nuevo), terminar de escribir lo pendiente antes de salir
+for (const sig of ['SIGTERM', 'SIGINT']) {
+  process.on(sig, () => {
+    servidor.close();
+    cola.finally(() => process.exit(0));
+    setTimeout(() => process.exit(0), 8000).unref();
+  });
+}

@@ -16,6 +16,14 @@ Cada venta puede tener cliente, teléfono, pallets, ciudad, origen (WPP/CRM), qu
 
 Si la página se abre sin servidor (doble clic en el HTML), funciona igual pero guarda todo solo en ese navegador.
 
+## Cómo se protegen los datos
+
+- **El servidor no arranca sin disco permanente.** En Railway, si `DATA_DIR` no está dentro de un Volume, el deploy falla a propósito en lugar de guardar en un disco que se borra.
+- **Respaldos automáticos**: una copia por hora de `ventas.json` en `respaldos/` dentro del Volume (se guardan ~2 semanas). Si `ventas.json` se daña, el servidor arranca desde el último respaldo.
+- **Guardado confirmado**: la página muestra *Guardado* / *Guardando…* / *Sin guardar*. Si el servidor no confirma, el cambio queda en cola en el navegador y se reintenta solo, incluso después de cerrar y volver a abrir. No deja cerrar la pestaña con cambios sin guardar.
+- **Copia espejo en cada navegador** (ventas y adjuntos). Si el servidor llega a perder datos, la página lo detecta y ofrece *Restaurar ahora*.
+- `GET /api/estado` muestra dónde se guarda, si el disco es permanente, cuántas ventas hay y el último respaldo.
+
 ## Correrlo en tu compu
 
 ```bash
