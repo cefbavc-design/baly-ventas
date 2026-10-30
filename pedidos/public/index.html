@@ -93,6 +93,9 @@
   .pal-seg i{flex:1;border-radius:3px;background:rgba(255,255,255,.18);position:relative;overflow:hidden}
   .pal-seg i b{position:absolute;inset:0 auto 0 0;background:var(--yellow);border-radius:3px}
   .pal-seg i b.c250{background:#fff}
+  .pal-seg i b.c2l{background:#3fbf3a}
+  .palok{flex:0 0 auto;align-self:center;font-size:10px;font-weight:900;background:var(--yellow);color:#000;border-radius:5px;padding:0 6px;line-height:16px;margin-right:4px}
+  .pal-seg{align-items:stretch;min-height:9px}
   .pal-txt{font-size:12px;font-weight:700;margin:5px 0 2px;display:flex;justify-content:space-between;gap:8px;opacity:.95}
   .pal-txt span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .pal-txt em{font-style:normal;color:var(--yellow);font-weight:800;white-space:nowrap}
@@ -106,6 +109,7 @@
   .ley{display:flex;gap:12px;font-size:11px;font-weight:700;opacity:.8;margin-top:8px}
   .ley i{display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--yellow);margin-right:5px;vertical-align:-1px}
   .ley i.c250{background:#fff}
+  .ley i.c2l{background:#3fbf3a}
   .aviso{margin-top:10px;background:#fff3c4;color:#5a4500;border-radius:12px;padding:10px 12px;font-size:12.5px;font-weight:700;line-height:1.35}
   .aviso button{display:inline-block;margin:6px 6px 0 0;background:#000;color:#fff;border-radius:9px;padding:6px 10px;font-size:12px;font-weight:800}
   .btn-vac{width:48px;height:48px;border-radius:15px;background:rgba(255,255,255,.12);color:#fff;display:flex;align-items:center;justify-content:center}
@@ -345,26 +349,27 @@ function nivel(bases, den){
   return '';
 }
 function estadoPallets(){
+  // Un pallet = 8 lugares de base. 473 = 45 packs por base, 250 = 56, 2 L = 20 packs y ocupa 2 lugares.
   const p473 = packsPor('473'), p250 = packsPor('250'), p2l = packsPor('2l');
   const b473 = p473 / BASE['473'], b250 = p250 / BASE['250'], b2l = p2l / BASE['2l'];
-  const latas = b473 + b250;
+  const latas = b473 + b250 + 2 * b2l; // total en octavos de pallet
   const avisos = [];
   if (latas >= 8 - 1e-9){
-    const f473 = p473 % 45, f250 = p250 % 56;
-    if (f473) avisos.push({ fmt:'473', txt:`473 ml: hay ${f473} packs sueltos. Sumá ${45 - f473} o sacá ${f473} para cerrar la base.`, mas:45 - f473, menos:f473 });
-    if (f250) avisos.push({ fmt:'250', txt:`250 ml: hay ${f250} packs sueltos. Sumá ${56 - f250} o sacá ${f250} para cerrar la base.`, mas:56 - f250, menos:f250 });
+    const f473 = p473 % 45, f250 = p250 % 56, f2l = p2l % 20;
+    if (f473) avisos.push({ fmt:'473', txt:`473 ml: hay ${f473} packs sueltos. Sumá ${45 - f473} o sacá ${f473} para cerrar la base.` });
+    if (f250) avisos.push({ fmt:'250', txt:`250 ml: hay ${f250} packs sueltos. Sumá ${56 - f250} o sacá ${f250} para cerrar la base.` });
+    if (f2l) avisos.push({ fmt:'2l', txt:`2 L: hay ${f2l} packs sueltos. Sumá ${20 - f2l} o sacá ${f2l} para cerrar la base.` });
   }
-  if (b2l >= 4 - 1e-9 && p2l % 20){ const f = p2l % 20; avisos.push({ fmt:'2l', txt:`2 L: hay ${f} packs sueltos. Sumá ${20 - f} o sacá ${f} para cerrar la base.`, mas:20 - f, menos:f }); }
   return { p473, p250, p2l, b473, b250, b2l, latas, avisos };
 }
-function segmentos(llenos, den, b473){
-  // pinta "den" segmentos por pallet en curso; los primeros b473 en amarillo (473) y el resto en blanco (250)
-  const pal = Math.max(1, Math.ceil(llenos / den - 1e-9));
-  const desde = (pal - 1) * den;
-  let html = '';
-  for (let i = 0; i < den; i++){
+function segmentos(e){
+  // 8 segmentos del pallet en curso: amarillo 473, blanco 250, verde 2 L (en ese orden)
+  const llenos = e.latas, lim473 = e.b473, lim250 = e.b473 + e.b250;
+  const pal = Math.max(1, Math.ceil(llenos / 8 - 1e-9)), desde = (pal - 1) * 8;
+  let html = pal > 1 ? `<span class="palok" title="Pallets completos">${pal - 1} pallet${pal > 2 ? 's' : ''} ✓</span>` : '';
+  for (let i = 0; i < 8; i++){
     const k = desde + i, fill = Math.max(0, Math.min(1, llenos - k));
-    const cls = b473 !== undefined && k >= b473 - 1e-9 ? 'c250' : '';
+    const cls = k < lim473 - 1e-9 ? '' : k < lim250 - 1e-9 ? 'c250' : 'c2l';
     html += `<i>${fill ? `<b class="${cls}" style="width:${fill*100}%"></b>` : ''}</i>`;
   }
   return html;
@@ -376,26 +381,19 @@ function textoFrac(bases, den){
 }
 const textoLatas = e => textoFrac(e.latas, 8);
 function textoBases(packs, por){ const b = Math.floor(packs / por), r = packs % por; return `${b} ${b === 1 ? 'base' : 'bases'}${r ? ` + ${r} packs` : ''}`; }
+function detalleBases(e){
+  return [e.p473 ? '473: ' + textoBases(e.p473, 45) : '', e.p250 ? '250: ' + textoBases(e.p250, 56) : '', e.p2l ? '2 L: ' + textoBases(e.p2l, 20) : ''].filter(Boolean).join(' · ');
+}
 function pintarPallets(){
   const e = estadoPallets();
-  // barra inferior
-  const partes = [];
-  if (e.latas) partes.push(`<div class="pal-seg">${segmentos(e.latas, 8, e.b473)}</div><div class="pal-txt"><span>Latas: ${textoLatas(e)}</span><em>${nivel(e.latas, 8)}</em></div>`);
-  if (e.b2l) partes.push(`<div class="pal-seg" style="margin-top:6px">${segmentos(e.b2l, 4)}</div><div class="pal-txt"><span>2 L: ${textoFrac(e.b2l, 4)}</span><em>${nivel(e.b2l, 4)}</em></div>`);
-  $('#barraPal').innerHTML = partes.join('');
-  // detalle en la hoja
-  const box = [];
-  if (e.latas) box.push(`<div class="palbox"><h4><span>Pallet de latas · ${textoLatas(e)}</span><em>${nivel(e.latas, 8)}</em></h4>
-    <div class="pal-seg">${segmentos(e.latas, 8, e.b473)}</div>
-    <div class="ley"><span><i></i>473 ml</span><span><i class="c250"></i>250 ml</span></div>
-    <div class="det">${e.p473 ? `<span>473 ml: <b>${textoBases(e.p473, 45)}</b> (base de 45 packs)</span>` : ''}${e.p250 ? `<span>250 ml: <b>${textoBases(e.p250, 56)}</b> (base de 56 packs)</span>` : ''}
+  $('#barraPal').innerHTML = e.latas ? `<div class="pal-seg">${segmentos(e)}</div><div class="pal-txt"><span>Pallet: ${textoLatas(e)}</span><em>${nivel(e.latas, 8)}</em></div>` : '';
+  const el = document.getElementById('pallets'); if (!el) return e;
+  el.innerHTML = e.latas ? `<div class="palbox"><h4><span>Pallet · ${textoLatas(e)}</span><em>${nivel(e.latas, 8)}</em></h4>
+    <div class="pal-seg">${segmentos(e)}</div>
+    <div class="ley">${e.p473 ? '<span><i></i>473 ml</span>' : ''}${e.p250 ? '<span><i class="c250"></i>250 ml</span>' : ''}${e.p2l ? '<span><i class="c2l"></i>2 L</span>' : ''}</div>
+    <div class="det">${e.p473 ? `<span>473 ml: <b>${textoBases(e.p473, 45)}</b> (base de 45 packs)</span>` : ''}${e.p250 ? `<span>250 ml: <b>${textoBases(e.p250, 56)}</b> (base de 56 packs)</span>` : ''}${e.p2l ? `<span>2 L: <b>${textoBases(e.p2l, 20)}</b> (base de 20 packs; cada una ocupa 2 lugares)</span>` : ''}
     <span>Un pallet son 8 bases. Desde 1/4 de pallet: precio pedido mínimo. Pallet completo: precio pallet.</span></div>
-    ${e.avisos.filter(a => a.fmt !== '2l').map(a => `<div class="aviso">Para pallet completo, cada base va entera de una sola presentación. ${a.txt}</div>`).join('')}</div>`);
-  if (e.b2l) box.push(`<div class="palbox"><h4><span>Pallet de botellas 2 L · ${textoFrac(e.b2l, 4)}</span><em>${nivel(e.b2l, 4)}</em></h4>
-    <div class="pal-seg">${segmentos(e.b2l, 4)}</div>
-    <div class="det"><span>2 L: <b>${textoBases(e.p2l, 20)}</b> (base de 20 packs)</span><span>Las botellas van en un pallet aparte de 4 bases; no se mezclan con latas.</span></div>
-    ${e.avisos.filter(a => a.fmt === '2l').map(a => `<div class="aviso">Para pallet completo, cada base va entera. ${a.txt}</div>`).join('')}</div>`);
-  const el = document.getElementById('pallets'); if (el) el.innerHTML = box.join('');
+    ${e.avisos.map(a => `<div class="aviso">Para pallet completo, cada base va entera de una sola presentación. ${a.txt}</div>`).join('')}</div>` : '';
   return e;
 }
 
@@ -440,8 +438,7 @@ function mensaje(){
   const t = totalPacks();
   lineas.push('', `*Total: ${t} ${t === 1 ? 'pack' : 'packs'}*`);
   const e = estadoPallets();
-  if (e.latas) lineas.push(`Latas: ${textoLatas(e)}${nivel(e.latas, 8) ? ' · ' + nivel(e.latas, 8) : ''}` + ` (${[e.p473 ? '473: ' + textoBases(e.p473, 45) : '', e.p250 ? '250: ' + textoBases(e.p250, 56) : ''].filter(Boolean).join(' · ')})`);
-  if (e.b2l) lineas.push(`2 L: ${textoFrac(e.b2l, 4)}${nivel(e.b2l, 4) ? ' · ' + nivel(e.b2l, 4) : ''} (${textoBases(e.p2l, 20)})`);
+  if (e.latas) lineas.push(`Pallet: ${textoLatas(e)}${nivel(e.latas, 8) ? ' · ' + nivel(e.latas, 8) : ''} (${detalleBases(e)})`);
   if (est.nota.trim()) lineas.push('', `Comentario: ${est.nota.trim()}`);
   return lineas.join('\n');
 }
