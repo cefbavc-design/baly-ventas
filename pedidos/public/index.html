@@ -347,10 +347,11 @@ function nivel(bases, den){
   return '';
 }
 function estadoPallets(){
-  // Un pallet = 8 lugares de base. 473 = 45 packs por base, 250 = 56, 2 L = 20 packs y ocupa 2 lugares.
+  // Pallet completo = 8 bases de 473 (45 packs) o 10 bases de 250 (56 packs) o 4 bases de 2 L (20 packs).
+  // Se mezclan: cada base de 473 = 1/8 de pallet, de 250 = 1/10, de 2 L = 1/4. Se muestra en octavos.
   const p473 = packsPor('473'), p250 = packsPor('250'), p2l = packsPor('2l');
   const b473 = p473 / BASE['473'], b250 = p250 / BASE['250'], b2l = p2l / BASE['2l'];
-  const latas = b473 + b250 + 2 * b2l; // total en octavos de pallet
+  const latas = b473 + b250 * 0.8 + 2 * b2l; // total en octavos de pallet
   const avisos = [];
   if (latas >= 8 - 1e-9){
     const f473 = p473 % 45, f250 = p250 % 56, f2l = p2l % 20;
@@ -362,7 +363,7 @@ function estadoPallets(){
 }
 function segmentos(e){
   // 8 segmentos del pallet en curso: amarillo 473, blanco 250, verde 2 L (en ese orden)
-  const llenos = e.latas, lim473 = e.b473, lim250 = e.b473 + e.b250;
+  const llenos = e.latas, lim473 = e.b473, lim250 = e.b473 + e.b250 * 0.8;
   const pal = Math.max(1, Math.ceil(llenos / 8 - 1e-9)), desde = (pal - 1) * 8;
   let html = pal > 1 ? `<span class="palok" title="Pallets completos">${pal - 1} pallet${pal > 2 ? 's' : ''} ✓</span>` : '';
   for (let i = 0; i < 8; i++){
@@ -389,8 +390,8 @@ function pintarPallets(){
   el.innerHTML = e.latas ? `<div class="palbox"><h4><span>Pallet · ${textoLatas(e)}</span><em>${nivel(e.latas, 8)}</em></h4>
     <div class="pal-seg">${segmentos(e)}</div>
     <div class="ley">${e.p473 ? '<span><i></i>473 ml</span>' : ''}${e.p250 ? '<span><i class="c250"></i>250 ml</span>' : ''}${e.p2l ? '<span><i class="c2l"></i>2 L</span>' : ''}</div>
-    <div class="det">${e.p473 ? `<span>473 ml: <b>${textoBases(e.p473, 45)}</b> (base de 45 packs)</span>` : ''}${e.p250 ? `<span>250 ml: <b>${textoBases(e.p250, 56)}</b> (base de 56 packs)</span>` : ''}${e.p2l ? `<span>2 L: <b>${textoBases(e.p2l, 20)}</b> (base de 20 packs; cada una ocupa 2 lugares)</span>` : ''}
-    <span>Un pallet son 8 bases. Desde 1/4 de pallet: precio pedido mínimo. Pallet completo: precio pallet.</span></div>
+    <div class="det">${e.p473 ? `<span>473 ml: <b>${textoBases(e.p473, 45)}</b> (base de 45 packs)</span>` : ''}${e.p250 ? `<span>250 ml: <b>${textoBases(e.p250, 56)}</b> (base de 56 packs; el pallet de 250 lleva 10 bases)</span>` : ''}${e.p2l ? `<span>2 L: <b>${textoBases(e.p2l, 20)}</b> (base de 20 packs; el pallet de 2 L lleva 4 bases)</span>` : ''}
+    <span>Pallet completo: 8 bases de 473, 10 de 250 o 4 de 2 L, y se pueden combinar. Desde 1/4 de pallet: precio pedido mínimo. Pallet completo: precio pallet.</span></div>
     ${e.avisos.map(a => `<div class="aviso">Para pallet completo, cada base va entera de una sola presentación. ${a.txt}</div>`).join('')}</div>` : '';
   return e;
 }
