@@ -108,6 +108,11 @@
   .ley i.c250{background:#fff}
   .aviso{margin-top:10px;background:#fff3c4;color:#5a4500;border-radius:12px;padding:10px 12px;font-size:12.5px;font-weight:700;line-height:1.35}
   .aviso button{display:inline-block;margin:6px 6px 0 0;background:#000;color:#fff;border-radius:9px;padding:6px 10px;font-size:12px;font-weight:800}
+  .btn-vac{width:48px;height:48px;border-radius:15px;background:rgba(255,255,255,.12);color:#fff;display:flex;align-items:center;justify-content:center}
+  .btn-vac svg{width:22px;height:22px}
+  .btn-vac:active{background:rgba(255,255,255,.25)}
+  .toast button{margin-left:10px;color:var(--yellow);font-weight:900;text-decoration:underline}
+  .toast.on{pointer-events:auto}
   .btn-ver{background:var(--yellow);color:#000;font-weight:900;padding:14px 18px;border-radius:15px;font-size:15px}
 
   /* Hoja del pedido */
@@ -173,6 +178,7 @@
 <div class="barra" id="barra">
   <div class="barra-in">
     <div class="tot"><b id="barraPacks">0</b> <span id="barraPacksTxt">packs</span></div>
+    <button class="btn-vac" id="btnVaciar2" aria-label="Vaciar pedido" title="Vaciar pedido"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/></svg></button>
     <button class="btn-ver" id="btnVer">Ver pedido →</button>
     <div class="pal" id="barraPal"></div>
   </div>
@@ -472,7 +478,16 @@ $('#btnVer').onclick = abrir;
 $('#cerrar').onclick = cerrar;
 $('#velo').onclick = cerrar;
 $('#btnEnviar').onclick = enviar;
-$('#btnVaciar').onclick = () => { if (!totalPacks()) return; est.cant = {}; guardar(); pintarCatalogo(); pintarBarra(); pintarFiltros(); pintarHoja(); toast('Pedido vacío'); };
+function vaciar(){
+  if (!totalPacks()) return;
+  const antes = Object.assign({}, est.cant);
+  est.cant = {}; guardar(); pintarCatalogo(); pintarBarra(); pintarFiltros(); pintarHoja(); cerrar();
+  const t = $('#toast'); t.innerHTML = 'Pedido vacío <button id="deshacer">Deshacer</button>'; t.classList.add('on');
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 5000);
+  $('#deshacer').onclick = () => { est.cant = antes; guardar(); pintarCatalogo(); pintarBarra(); pintarFiltros(); t.classList.remove('on'); };
+}
+$('#btnVaciar').onclick = vaciar;
+$('#btnVaciar2').onclick = vaciar;
 document.addEventListener('keydown', e => { if (e.key === 'Escape') cerrar(); });
 
 pintarFiltros(); pintarCatalogo(); pintarBarra();
