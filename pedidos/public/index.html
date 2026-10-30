@@ -256,6 +256,8 @@ const P = [
   { id:'2l-frutas-tropicales', g:'2l', n:'Frutas Tropicales', f:'Botella 2 L', c:'#f2d41b', bot:true },
 ];
 const porId = Object.fromEntries(P.map(p => [p.id, p]));
+// Botones rápidos por presentación: base entera, media y cuarto de base
+const RAPIDOS = { '473':[45,30,15], '250':[56,28,14], '2l':[20,10,5] };
 
 // Estado (se recuerda en este celular por comodidad)
 const LS = 'baly_pedido_v1';
@@ -296,11 +298,7 @@ function cardHTML(p){
     </div>
     <div class="info">
       <div class="nombre">${esc(p.n)}<span>${esc(p.f)}</span></div>
-      <div class="rapidos">
-        <button data-a="sumar" data-n="5" data-id="${p.id}">+5</button>
-        <button data-a="sumar" data-n="10" data-id="${p.id}">+10</button>
-        <button data-a="sumar" data-n="20" data-id="${p.id}">+20</button>
-      </div>
+      <div class="rapidos">${RAPIDOS[formato(p)].map(n => `<button data-a="sumar" data-n="${n}" data-id="${p.id}">+${n}</button>`).join('')}</div>
       ${stepperHTML(p.id)}
     </div>
   </article>`;
